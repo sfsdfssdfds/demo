@@ -4,7 +4,34 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>到货识别助手</title>
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <!-- OCR 库：本地优先（微信/内网更稳），失败再尝试 CDN -->
+  <script src="./libs/tesseract.min.js"
+          onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'"></script>
+  <script>
+    // jsdelivr 失败再 fallback 到 unpkg（微信里经常需要多条线路兜底）
+    window.__TESSERACT_CDN_FALLBACK__ = function () {
+      var scripts = document.getElementsByTagName('script');
+      for (var i = 0; i < scripts.length; i++) {
+        var s = scripts[i];
+        var src = String(s.src || '');
+        if (src.indexOf('tesseract.min.js') >= 0 && src.indexOf('cdn.jsdelivr.net') >= 0) {
+          s.onerror = null;
+          s.src = 'https://unpkg.com/tesseract.js@5/dist/tesseract.min.js';
+          break;
+        }
+      }
+    };
+    window.addEventListener('error', function (e) {
+      try {
+        if (e && e.target && e.target.tagName === 'SCRIPT') {
+          var src = String(e.target.src || '');
+          if (src.indexOf('tesseract.min.js') >= 0 && src.indexOf('cdn.jsdelivr.net') >= 0) {
+            window.__TESSERACT_CDN_FALLBACK__();
+          }
+        }
+      } catch {}
+    }, true);
+  </script>
   <style>
     :root {
       --bg: #f4f9ff;
@@ -711,7 +738,7 @@
         id: Date.now(),
         time: now.toLocaleString('zh-CN', { hour12: false }),
         batchName: els.batchName.value.trim(),
-        range: els.rangeInput.value.trim(),
+        range: getRangeText(),
         mapping: currentMapping,
         total: totalFromMapping(currentMapping),
         source,
@@ -748,6 +775,116 @@
 
     function clamp(n, min, max) {
       return Math.max(min, Math.min(max, n));
+    }
+
+    async function waitForOpenCvReady(timeoutMs = 8000) {
+      const start = Date.now();
+      return new Promise(resolve => {
+        (function tick() {
+          try {
+            if (window.cv && window.cv.Mat) {
+              // 如果 runtime 已初始化，下面会成功；否则继续等
+              const m = cv.Mat.ones(1, 1, cv.CV_8U);
+              m.delete();
+              return resolve(true);
+            }
+          } catch {}
+
+          if (Date.now() - start > timeoutMs) return resolve(false);
+          setTimeout(tick, 60);
+        })();
+      });
+    }
+
+    async function rotateBlob(fileOrBlob, degrees) {
+      const img = await loadImageFromFile(fileOrBlob);
+      const rad = (degrees % 360) * Math.PI / 180;
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      const rightAngle = Math.abs((degrees % 180)) === 90;
+      canvas.width = rightAngle ? h : w;
+      canvas.height = rightAngle ? w : h;
+
+      ctx.save();
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate(rad);
+      ctx.drawImage(img, -w / 2, -h / 2);
+      ctx.restore();
+
+      const blob = await new Promise(resolve => {
+        canvas.toBlob(b => resolve(b), 'image/png');
+      });
+      if (!blob) throw new Error('图片旋转失败');
+      return blob;
+    }
+
+    // OpenCV 预处理：灰度 + 高斯模糊 + 自适应阈值 + 形态学闭运算（增强笔画、压制纸箱纹理）
+    async function preprocessForOcrOpenCv(fileOrBlob, options = {}) {
+      const ok = await waitForOpenCvReady();
+      if (!ok) return preprocessForOcr(fileOrBlob, options);
+
+      const img = await loadImageFromFile(fileOrBlob);
+      const maxW = options.maxW || 2000;
+      const scale = Math.max(1, Math.min(maxW / img.naturalWidth, 4));
+      const w = Math.round(img.naturalWidth * scale);
+      const h = Math.round(img.naturalHeight * scale);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, 0, 0, w, h);
+
+      let src, gray, blur, bin, kernel, morphed;
+      try {
+        src = cv.imread(canvas);
+        gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+        blur = new cv.Mat();
+        const ksize = options.ksize || 5;
+        cv.GaussianBlur(gray, blur, new cv.Size(ksize, ksize), 0, 0, cv.BORDER_DEFAULT);
+
+        bin = new cv.Mat();
+        const blockSize = options.blockSize || 31; // 必须奇数
+        const C = options.C == null ? 6 : options.C;
+        cv.adaptiveThreshold(
+          blur,
+          bin,
+          255,
+          cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+          cv.THRESH_BINARY,
+          blockSize % 2 === 1 ? blockSize : blockSize + 1,
+          C
+        );
+
+        if (options.invert) cv.bitwise_not(bin, bin);
+
+        kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+        morphed = new cv.Mat();
+        cv.morphologyEx(bin, morphed, cv.MORPH_CLOSE, kernel);
+
+        cv.imshow(canvas, morphed);
+      } finally {
+        if (src) src.delete();
+        if (gray) gray.delete();
+        if (blur) blur.delete();
+        if (bin) bin.delete();
+        if (kernel) kernel.delete();
+        if (morphed) morphed.delete();
+      }
+
+      const blob = await new Promise(resolve => {
+        canvas.toBlob(b => resolve(b), 'image/png');
+      });
+      if (!blob) throw new Error('图片预处理失败');
+      return blob;
     }
 
     // 简单稳健的预处理：放大 + 灰度 + 自适应阈值（二值化），可选反色
@@ -821,8 +958,16 @@
     }
 
     async function getOcrWorker() {
+      if (!window.Tesseract) {
+        throw new Error('OCR 库加载失败：未找到 Tesseract。请确认 ./libs/tesseract.min.js 可以被页面同域访问，然后刷新重试。');
+      }
       if (ocrWorker) return ocrWorker;
+      // 显式指定本地路径：避免微信里 worker/wasm/语言包继续走外链导致失败
+      // 需要在站点同域放置 libs 目录下的文件（见 libs/README.txt）
       ocrWorker = await Tesseract.createWorker('eng', 1, {
+        workerPath: './libs/worker.min.js',
+        corePath: './libs/tesseract-core.wasm.js',
+        langPath: './libs',
         logger: m => {
           if (m.status === 'recognizing text') {
             const percent = Math.round((m.progress || 0) * 100);
@@ -881,16 +1026,21 @@
 
         const worker = await getOcrWorker();
 
-        // 多策略：原图 + 二值化 + 反色二值化（对黑底白字/光照反差大更友好）
+        // 强化手写数字：旋转(0/90/180/270) + OpenCV二值化/形态学 + 反色
         const blobs = [];
-        blobs.push({ name: 'original', blob: file });
-        blobs.push({ name: 'binary', blob: await preprocessForOcr(file, { invert: false, contrast: 1.35, delta: 8 }) });
-        blobs.push({ name: 'binary_invert', blob: await preprocessForOcr(file, { invert: true, contrast: 1.35, delta: 8 }) });
+        const rotations = [0, 90, 180, 270];
+        for (const deg of rotations) {
+          const base = deg === 0 ? file : await rotateBlob(file, deg);
+          blobs.push({ name: `rot${deg}_orig`, blob: base });
+          blobs.push({ name: `rot${deg}_cvbin`, blob: await preprocessForOcrOpenCv(base, { invert: false, blockSize: 31, C: 6 }) });
+          blobs.push({ name: `rot${deg}_cvbin_inv`, blob: await preprocessForOcrOpenCv(base, { invert: true, blockSize: 31, C: 6 }) });
+        }
 
         const candidates = [];
         for (const item of blobs) {
-          // 尝试不同页面分割模式：7=单行文本，8=单词（数字串），6=块
-          const psms = [7, 8, 6];
+          // 手写数字更容易粘连/断裂：加 raw line / sparse
+          // 7=单行, 8=单词, 6=块, 11=稀疏文本, 13=raw line
+          const psms = [13, 7, 8, 11, 6];
           for (const psm of psms) {
             await worker.setParameters({ tessedit_pageseg_mode: String(psm) });
             const r = await worker.recognize(item.blob);
@@ -905,6 +1055,10 @@
             });
             // 如果已经完美命中长度，就早点收敛减少等待
             if (digits && digits.length === expectedLen) break;
+          }
+          if (candidates.length) {
+            const bestNow = pickBestDigits(candidates, expectedLen);
+            if (bestNow && bestNow.digits && bestNow.digits.length === expectedLen) break;
           }
         }
 
