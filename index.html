@@ -501,6 +501,7 @@
     let currentMapping = {};
     let manualDraft = [];
     let isRecognizing = false;
+    let ocrWorker = null;
 
     function setStatus(text, type = '') {
       els.status.className = 'status' + (type ? ` ${type}` : '');
@@ -695,6 +696,140 @@
       reader.readAsDataURL(file);
     }
 
+    function loadImageFromFile(file) {
+      return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          resolve(img);
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error('图片读取失败'));
+        };
+        img.src = url;
+      });
+    }
+
+    function clamp(n, min, max) {
+      return Math.max(min, Math.min(max, n));
+    }
+
+    // 简单稳健的预处理：放大 + 灰度 + 自适应阈值（二值化），可选反色
+    async function preprocessForOcr(file, options = {}) {
+      const img = await loadImageFromFile(file);
+      const maxW = options.maxW || 1800;
+      const scale = Math.max(1, Math.min(maxW / img.naturalWidth, 4));
+      const w = Math.round(img.naturalWidth * scale);
+      const h = Math.round(img.naturalHeight * scale);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const data = imageData.data;
+
+      // 灰度 + 轻微对比度增强
+      // contrast: 1.0~1.6（越大越硬），brightness: -20~20
+      const contrast = options.contrast == null ? 1.35 : options.contrast;
+      const brightness = options.brightness == null ? 0 : options.brightness;
+
+      const gray = new Uint8ClampedArray(w * h);
+      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        let v = (r * 0.299 + g * 0.587 + b * 0.114);
+        v = (v - 128) * contrast + 128 + brightness;
+        gray[p] = clamp(v, 0, 255);
+      }
+
+      // 简单“局部均值阈值”：对每个点取邻域均值（3x3）作为阈值基准
+      const invert = !!options.invert;
+      const delta = options.delta == null ? 8 : options.delta; // 阈值偏移，小一点更敏感
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          let sum = 0;
+          let cnt = 0;
+          for (let oy = -1; oy <= 1; oy++) {
+            const yy = y + oy;
+            if (yy < 0 || yy >= h) continue;
+            for (let ox = -1; ox <= 1; ox++) {
+              const xx = x + ox;
+              if (xx < 0 || xx >= w) continue;
+              sum += gray[yy * w + xx];
+              cnt++;
+            }
+          }
+          const mean = sum / (cnt || 1);
+          const idx = y * w + x;
+          let v = gray[idx] > (mean - delta) ? 255 : 0;
+          if (invert) v = 255 - v;
+          const i = idx * 4;
+          data[i] = v;
+          data[i + 1] = v;
+          data[i + 2] = v;
+          data[i + 3] = 255;
+        }
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+
+      const blob = await new Promise(resolve => {
+        canvas.toBlob(b => resolve(b), 'image/png');
+      });
+      if (!blob) throw new Error('图片预处理失败');
+      return blob;
+    }
+
+    async function getOcrWorker() {
+      if (ocrWorker) return ocrWorker;
+      ocrWorker = await Tesseract.createWorker('eng', 1, {
+        logger: m => {
+          if (m.status === 'recognizing text') {
+            const percent = Math.round((m.progress || 0) * 100);
+            setStatus(`正在自动识别数字：${percent}%`, 'warn');
+          }
+        }
+      });
+
+      // 只识别数字串：减少误识别（不引入新依赖，只调参数）
+      await ocrWorker.setParameters({
+        tessedit_char_whitelist: '0123456789',
+        classify_bln_numeric_mode: '1',
+        preserve_interword_spaces: '1',
+      });
+
+      return ocrWorker;
+    }
+
+    function pickBestDigits(candidates, expectedLen) {
+      // candidates: [{ digits, confidence, raw }]
+      const clean = candidates
+        .filter(c => c && c.digits)
+        .map(c => ({
+          digits: String(c.digits).replace(/\D/g, ''),
+          confidence: Number(c.confidence || 0),
+          raw: c.raw || ''
+        }))
+        .filter(c => c.digits);
+
+      // 优先：长度完全匹配；其次：更接近 expectedLen；再按置信度
+      const score = c => {
+        const len = c.digits.length;
+        const lenScore = (expectedLen && len === expectedLen) ? 1000 : 0;
+        const diff = expectedLen ? Math.abs(expectedLen - len) : 0;
+        return lenScore - diff * 10 + (c.confidence || 0);
+      };
+
+      clean.sort((a, b) => score(b) - score(a));
+      return clean[0] || { digits: '' };
+    }
+
     async function recognizeImage(file) {
       if (!file) return;
       if (!els.rangeInput.value.trim()) {
@@ -707,17 +842,40 @@
       setStatus('图片已上传，正在自动识别数字，请稍候…', 'warn');
 
       try {
-        const result = await Tesseract.recognize(file, 'eng', {
-          logger: m => {
-            if (m.status === 'recognizing text') {
-              const percent = Math.round((m.progress || 0) * 100);
-              setStatus(`正在自动识别数字：${percent}%`, 'warn');
-            }
-          }
-        });
+        const sizes = parseRange(els.rangeInput.value.trim());
+        const expectedLen = sizes.length;
 
-        const raw = (result.data && result.data.text) ? result.data.text : '';
-        const digits = raw.replace(/\D/g, '');
+        const worker = await getOcrWorker();
+
+        // 多策略：原图 + 二值化 + 反色二值化（对黑底白字/光照反差大更友好）
+        const blobs = [];
+        blobs.push({ name: 'original', blob: file });
+        blobs.push({ name: 'binary', blob: await preprocessForOcr(file, { invert: false, contrast: 1.35, delta: 8 }) });
+        blobs.push({ name: 'binary_invert', blob: await preprocessForOcr(file, { invert: true, contrast: 1.35, delta: 8 }) });
+
+        const candidates = [];
+        for (const item of blobs) {
+          // 尝试不同页面分割模式：7=单行文本，8=单词（数字串），6=块
+          const psms = [7, 8, 6];
+          for (const psm of psms) {
+            await worker.setParameters({ tessedit_pageseg_mode: String(psm) });
+            const r = await worker.recognize(item.blob);
+            const raw = (r.data && r.data.text) ? r.data.text : '';
+            const digits = raw.replace(/\D/g, '');
+            candidates.push({
+              digits,
+              confidence: r.data && r.data.confidence ? r.data.confidence : 0,
+              raw,
+              name: item.name,
+              psm
+            });
+            // 如果已经完美命中长度，就早点收敛减少等待
+            if (digits && digits.length === expectedLen) break;
+          }
+        }
+
+        const best = pickBestDigits(candidates, expectedLen);
+        const digits = best.digits;
         if (!digits) throw new Error('没有识别到数字，请换一张更清晰的图片');
 
         els.ocrInput.value = digits;
