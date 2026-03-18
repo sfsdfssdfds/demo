@@ -370,8 +370,11 @@
 
         <div class="row">
           <div class="field">
-            <label for="rangeInput">当前鞋号范围</label>
-            <input id="rangeInput" type="text" placeholder="例如：35-40" />
+            <label>当前鞋号范围</label>
+            <div class="row" style="grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 0;">
+              <select id="rangeStart" aria-label="起始鞋码"></select>
+              <select id="rangeEnd" aria-label="结束鞋码"></select>
+            </div>
           </div>
           <div class="field">
             <label for="batchName">批次名称</label>
@@ -475,7 +478,8 @@
     const CURRENT_KEY = 'arrival_shoe_counter_current_v2';
 
     const els = {
-      rangeInput: document.getElementById('rangeInput'),
+      rangeStart: document.getElementById('rangeStart'),
+      rangeEnd: document.getElementById('rangeEnd'),
       batchName: document.getElementById('batchName'),
       manualRows: document.getElementById('manualRows'),
       addManualRowBtn: document.getElementById('addManualRowBtn'),
@@ -522,7 +526,8 @@
 
     function saveCurrentState() {
       const state = {
-        rangeInput: els.rangeInput.value,
+        rangeStart: els.rangeStart.value,
+        rangeEnd: els.rangeEnd.value,
         batchName: els.batchName.value,
         ocrInput: els.ocrInput.value,
         currentMapping,
@@ -535,13 +540,42 @@
       try {
         const state = JSON.parse(localStorage.getItem(CURRENT_KEY));
         if (!state) return;
-        els.rangeInput.value = state.rangeInput || '';
+        // 兼容旧版 rangeInput（例如 "35-45"）
+        if (state.rangeStart && state.rangeEnd) {
+          els.rangeStart.value = String(state.rangeStart);
+          els.rangeEnd.value = String(state.rangeEnd);
+        } else if (state.rangeInput) {
+          const m = String(state.rangeInput).trim().match(/^(\d+)\s*[-~—]\s*(\d+)$/);
+          if (m) {
+            els.rangeStart.value = m[1];
+            els.rangeEnd.value = m[2];
+          }
+        }
         els.batchName.value = state.batchName || '';
         els.ocrInput.value = state.ocrInput || '';
         els.ocrDisplay.textContent = state.ocrInput || '--';
         currentMapping = state.currentMapping || {};
         manualDraft = Array.isArray(state.manualDraft) ? state.manualDraft : [];
       } catch {}
+    }
+
+    function getRangeText() {
+      const start = els.rangeStart.value;
+      const end = els.rangeEnd.value;
+      if (!start || !end) return '';
+      return `${start}-${end}`;
+    }
+
+    function populateRangeSelects() {
+      // 固定可选范围：35-45
+      const min = 35;
+      const max = 45;
+      const opts = [];
+      for (let i = min; i <= max; i++) {
+        opts.push(`<option value="${i}">${i}</option>`);
+      }
+      els.rangeStart.innerHTML = opts.join('');
+      els.rangeEnd.innerHTML = opts.join('');
     }
 
     function parseRange(text) {
@@ -557,7 +591,7 @@
 
     function getSizesSafe() {
       try {
-        return parseRange(els.rangeInput.value.trim());
+        return parseRange(getRangeText());
       } catch {
         return [];
       }
@@ -832,7 +866,7 @@
 
     async function recognizeImage(file) {
       if (!file) return;
-      if (!els.rangeInput.value.trim()) {
+      if (!getRangeText()) {
         setStatus('请先输入鞋码范围，再上传图片识别。', 'err');
         return;
       }
@@ -842,7 +876,7 @@
       setStatus('图片已上传，正在自动识别数字，请稍候…', 'warn');
 
       try {
-        const sizes = parseRange(els.rangeInput.value.trim());
+        const sizes = parseRange(getRangeText());
         const expectedLen = sizes.length;
 
         const worker = await getOcrWorker();
@@ -881,7 +915,7 @@
         els.ocrInput.value = digits;
         els.ocrDisplay.textContent = digits;
 
-        currentMapping = mappingFromDigitString(els.rangeInput.value, digits);
+        currentMapping = mappingFromDigitString(getRangeText(), digits);
         renderCurrent();
         setStatus(`识别完成：${digits}，已自动转换到当前结果。请确认后点击“保存识别结果”。`, 'ok');
       } catch (err) {
@@ -908,13 +942,13 @@
 
     function bindEvents() {
       ['input', 'change'].forEach(evt => {
-        [els.rangeInput, els.batchName, els.ocrInput].forEach(el => {
+        [els.rangeStart, els.rangeEnd, els.batchName, els.ocrInput].forEach(el => {
           el.addEventListener(evt, () => {
             if (el === els.ocrInput) {
               els.ocrDisplay.textContent = els.ocrInput.value.trim() || '--';
               try {
-                if (els.ocrInput.value.trim() && els.rangeInput.value.trim()) {
-                  currentMapping = mappingFromDigitString(els.rangeInput.value, els.ocrInput.value);
+                if (els.ocrInput.value.trim() && getRangeText()) {
+                  currentMapping = mappingFromDigitString(getRangeText(), els.ocrInput.value);
                   renderCurrent();
                 }
               } catch {}
@@ -924,10 +958,24 @@
         });
       });
 
-      els.rangeInput.addEventListener('change', () => {
+      [els.rangeStart, els.rangeEnd].forEach(el => el.addEventListener('change', () => {
+        // 保证结束鞋码不小于起始鞋码（保持旧逻辑 parseRange 的约束）
+        const s = Number(els.rangeStart.value);
+        const e = Number(els.rangeEnd.value);
+        if (!Number.isNaN(s) && !Number.isNaN(e) && e < s) {
+          els.rangeEnd.value = String(s);
+        }
         manualDraft = collectManualRows();
         renderManualRows();
-      });
+        // 鞋码范围变动后，如果已有 OCR 数字串，尝试立即重算映射（失败则忽略）
+        try {
+          if (els.ocrInput.value.trim() && getRangeText()) {
+            currentMapping = mappingFromDigitString(getRangeText(), els.ocrInput.value);
+            renderCurrent();
+          }
+        } catch {}
+        saveCurrentState();
+      }));
 
       els.addManualRowBtn.addEventListener('click', () => addManualRow());
 
@@ -970,7 +1018,7 @@
       els.saveOcrBtn.addEventListener('click', () => {
         try {
           if (isRecognizing) throw new Error('图片仍在识别中，请稍后再保存');
-          currentMapping = mappingFromDigitString(els.rangeInput.value, els.ocrInput.value);
+          currentMapping = mappingFromDigitString(getRangeText(), els.ocrInput.value);
           renderCurrent();
           saveCurrentRecord('ocr');
           setStatus('识别结果已保存。', 'ok');
@@ -1000,7 +1048,11 @@
     }
 
     function init() {
+      populateRangeSelects();
       loadCurrentState();
+      // 默认 35-45（两个下拉）
+      if (!els.rangeStart.value) els.rangeStart.value = '35';
+      if (!els.rangeEnd.value) els.rangeEnd.value = '45';
       renderManualRows();
       bindEvents();
       renderCurrent();
