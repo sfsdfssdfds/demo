@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>到货识别助手</title>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <style>
+    :root {
+      --bg: #f4f9ff;
+      --panel: rgba(255,255,255,0.94);
+      --primary: #2f80ed;
+      --primary-dark: #1f6fdd;
+      --primary-soft: #e8f2ff;
+      --text: #17324d;
+      --muted: #6c86a0;
+      --border: #d9e8fb;
+      --danger: #ef5350;
+      --success: #17a673;
+      --warning: #f59e0b;
+      --shadow: 0 10px 30px rgba(47, 128, 237, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      background: linear-gradient(180deg, #eef6ff 0%, #f8fbff 100%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 24px 16px 48px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, #2f80ed 0%, #62b0ff 100%);
+      color: white;
+      border-radius: 28px;
+      padding: 28px;
+      box-shadow: 0 20px 40px rgba(47, 128, 237, 0.18);
+      margin-bottom: 20px;
+    }
+
+    .hero h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 4vw, 42px);
+      line-height: 1.1;
+    }
+
+    .hero p {
+      margin: 0;
+      font-size: 15px;
+      opacity: 0.96;
+      max-width: 800px;
+      line-height: 1.7;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 20px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid rgba(255,255,255,0.8);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      padding: 20px;
+      backdrop-filter: blur(6px);
+    }
+
+    .card h2 {
+      margin: 0 0 6px;
+      font-size: 20px;
+    }
+
+    .sub {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .field label {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    input, select {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: white;
+      border-radius: 16px;
+      padding: 14px 16px;
+      font-size: 15px;
+      color: var(--text);
+      outline: none;
+      transition: 0.2s ease;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
+    }
+
+    input:focus, select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 4px rgba(47, 128, 237, 0.12);
+    }
+
+    .btns {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    button, .file-btn {
+      border: none;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.2s ease, opacity 0.2s ease;
+      box-shadow: 0 10px 18px rgba(47, 128, 237, 0.14);
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    button:hover, .file-btn:hover { transform: translateY(-1px); }
+    button:disabled, .file-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+    .primary {
+      background: linear-gradient(135deg, var(--primary) 0%, #4fa3ff 100%);
+      color: white;
+    }
+
+    .secondary {
+      background: white;
+      color: var(--primary);
+      border: 1px solid var(--border);
+    }
+
+    .danger {
+      background: #fff1f1;
+      color: var(--danger);
+      border: 1px solid #ffd4d4;
+      box-shadow: none;
+    }
+
+    .hint, .status {
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--muted);
+      margin-top: 10px;
+    }
+
+    .status.ok { color: var(--success); }
+    .status.err { color: var(--danger); }
+    .status.warn { color: var(--warning); }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--primary);
+      background: var(--primary-soft);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .mini {
+      background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 16px;
+    }
+
+    .mini .k {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+
+    .mini .v {
+      font-size: 28px;
+      font-weight: 800;
+      color: var(--primary-dark);
+    }
+
+    .size-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .size-chip {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: #fff;
+      padding: 12px;
+      box-shadow: 0 6px 16px rgba(47,128,237,0.06);
+    }
+
+    .size-chip .s {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .size-chip .n {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--primary-dark);
+    }
+
+    .table-wrap {
+      overflow: auto;
+      margin-top: 16px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: white;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 520px;
+    }
+
+    th, td {
+      padding: 14px 12px;
+      border-bottom: 1px solid #eef4fb;
+      text-align: left;
+      font-size: 14px;
+    }
+
+    th {
+      color: var(--muted);
+      background: #f8fbff;
+      font-weight: 700;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .manual-panel {
+      background: #f8fbff;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 14px;
+      margin-top: 8px;
+    }
+
+    .manual-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 10px;
+      margin-bottom: 10px;
+      align-items: center;
+    }
+
+    .manual-row:last-child { margin-bottom: 0; }
+
+    .icon-btn {
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      border-radius: 14px;
+      box-shadow: none;
+    }
+
+    .preview-wrap {
+      margin-top: 14px;
+      border: 1px solid var(--border);
+      background: white;
+      border-radius: 20px;
+      overflow: hidden;
+    }
+
+    .preview-wrap img {
+      width: 100%;
+      display: block;
+      max-height: 320px;
+      object-fit: contain;
+      background: #eef6ff;
+    }
+
+    .ocr-box {
+      background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 14px;
+      margin-top: 12px;
+    }
+
+    .ocr-value {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      color: var(--primary-dark);
+      word-break: break-all;
+    }
+
+    .hidden { display: none !important; }
+
+    .footer-note {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    @media (max-width: 860px) {
+      .grid { grid-template-columns: 1fr; }
+      .row, .summary { grid-template-columns: 1fr; }
+      .manual-row { grid-template-columns: 1fr 1fr auto; }
+      .hero { padding: 22px; }
+    }
+
+    @media (max-width: 560px) {
+      .manual-row { grid-template-columns: 1fr; }
+      .icon-btn { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <section class="hero">
+      <h1>到货识别助手</h1>
+      <p>
+        支持手动选择鞋码录入数量，也支持拍照或从相册上传图片后自动识别数字串，再按鞋码范围自动转换成对应数量。数据保存在浏览器本地，刷新也不会丢失。
+      </p>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <div class="badge">蓝色清爽风格 · 自动识别 · 手机友好</div>
+        <h2>录入与图片识别</h2>
+        <p class="sub">先输入鞋码范围，例如 35-40。若识别结果为 455670，则表示 35码4双、36码5双、37码5双、38码6双、39码7双、40码0双。</p>
+
+        <div class="row">
+          <div class="field">
+            <label for="rangeInput">当前鞋号范围</label>
+            <input id="rangeInput" type="text" placeholder="例如：35-40" />
+          </div>
+          <div class="field">
+            <label for="batchName">批次名称</label>
+            <input id="batchName" type="text" placeholder="例如：3月新到货" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>手动输入到货</label>
+          <div class="manual-panel">
+            <div id="manualRows"></div>
+            <div class="btns">
+              <button class="secondary" id="addManualRowBtn">添加一行</button>
+              <button class="primary" id="saveManualBtn">保存手动录入</button>
+              <button class="danger" id="clearManualBtn">清空手动录入</button>
+            </div>
+          </div>
+          <div class="hint">手动输入改为：先选择鞋码，再填写数量。</div>
+        </div>
+
+        <div class="field">
+          <label>图片识别</label>
+          <div class="btns">
+            <label class="file-btn primary" for="cameraInput">点击拍照</label>
+            <label class="file-btn secondary" for="albumInput">上传图片</label>
+            <button class="secondary" id="saveOcrBtn">保存识别结果</button>
+          </div>
+          <input id="cameraInput" type="file" accept="image/*" capture="environment" class="hidden" />
+          <input id="albumInput" type="file" accept="image/*" class="hidden" />
+          <div class="hint">“点击拍照”会走系统相机拍照上传；“上传图片”会打开相册选择图片。图片上传后会自动开始识别。</div>
+        </div>
+
+        <div class="preview-wrap hidden" id="previewWrap">
+          <img id="imagePreview" alt="预览图" />
+        </div>
+
+        <div class="ocr-box">
+          <div class="field" style="margin-bottom:10px;">
+            <label for="ocrInput">自动识别结果（可手动修正）</label>
+            <input id="ocrInput" type="text" placeholder="上传图片后会自动识别" />
+          </div>
+          <div class="ocr-value" id="ocrDisplay">--</div>
+          <div class="hint">识别后会自动带入并尝试转换；如识别有误，可手动修改后点击“保存识别结果”。</div>
+        </div>
+
+        <div id="status" class="status">等待输入或上传图片。</div>
+      </section>
+
+      <section class="card">
+        <h2>当前结果</h2>
+        <p class="sub">这里会实时显示当前鞋码范围对应的数量映射，以及历史保存记录。</p>
+
+        <div class="summary">
+          <div class="mini">
+            <div class="k">总双数</div>
+            <div class="v" id="totalPairs">0</div>
+          </div>
+          <div class="mini">
+            <div class="k">鞋码个数</div>
+            <div class="v" id="sizeCount">0</div>
+          </div>
+          <div class="mini">
+            <div class="k">历史记录</div>
+            <div class="v" id="recordCount">0</div>
+          </div>
+        </div>
+
+        <div id="sizeGrid" class="size-grid"></div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>批次</th>
+                <th>鞋码范围</th>
+                <th>数量明细</th>
+                <th>总双数</th>
+              </tr>
+            </thead>
+            <tbody id="historyTableBody">
+              <tr><td colspan="5">暂无记录</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="btns" style="margin-top: 16px;">
+          <button class="secondary" id="exportBtn">导出 JSON</button>
+          <button class="danger" id="clearHistoryBtn">清空全部历史</button>
+        </div>
+
+        <div class="footer-note">
+          OCR 识别依赖网络加载前端识别库。若网络较慢，首次识别可能稍慢一些；识别结果支持手动修正后再保存。
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const STORAGE_KEY = 'arrival_shoe_counter_records_v2';
+    const CURRENT_KEY = 'arrival_shoe_counter_current_v2';
+
+    const els = {
+      rangeInput: document.getElementById('rangeInput'),
+      batchName: document.getElementById('batchName'),
+      manualRows: document.getElementById('manualRows'),
+      addManualRowBtn: document.getElementById('addManualRowBtn'),
+      saveManualBtn: document.getElementById('saveManualBtn'),
+      clearManualBtn: document.getElementById('clearManualBtn'),
+      cameraInput: document.getElementById('cameraInput'),
+      albumInput: document.getElementById('albumInput'),
+      imagePreview: document.getElementById('imagePreview'),
+      previewWrap: document.getElementById('previewWrap'),
+      ocrInput: document.getElementById('ocrInput'),
+      ocrDisplay: document.getElementById('ocrDisplay'),
+      saveOcrBtn: document.getElementById('saveOcrBtn'),
+      status: document.getElementById('status'),
+      totalPairs: document.getElementById('totalPairs'),
+      sizeCount: document.getElementById('sizeCount'),
+      recordCount: document.getElementById('recordCount'),
+      sizeGrid: document.getElementById('sizeGrid'),
+      historyTableBody: document.getElementById('historyTableBody'),
+      exportBtn: document.getElementById('exportBtn'),
+      clearHistoryBtn: document.getElementById('clearHistoryBtn'),
+    };
+
+    let currentMapping = {};
+    let manualDraft = [];
+    let isRecognizing = false;
+
+    function setStatus(text, type = '') {
+      els.status.className = 'status' + (type ? ` ${type}` : '');
+      els.status.textContent = text;
+    }
+
+    function getRecords() {
+      try {
+        return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveRecords(records) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+    }
+
+    function saveCurrentState() {
+      const state = {
+        rangeInput: els.rangeInput.value,
+        batchName: els.batchName.value,
+        ocrInput: els.ocrInput.value,
+        currentMapping,
+        manualDraft: collectManualRows(),
+      };
+      localStorage.setItem(CURRENT_KEY, JSON.stringify(state));
+    }
+
+    function loadCurrentState() {
+      try {
+        const state = JSON.parse(localStorage.getItem(CURRENT_KEY));
+        if (!state) return;
+        els.rangeInput.value = state.rangeInput || '';
+        els.batchName.value = state.batchName || '';
+        els.ocrInput.value = state.ocrInput || '';
+        els.ocrDisplay.textContent = state.ocrInput || '--';
+        currentMapping = state.currentMapping || {};
+        manualDraft = Array.isArray(state.manualDraft) ? state.manualDraft : [];
+      } catch {}
+    }
+
+    function parseRange(text) {
+      const match = String(text || '').trim().match(/^(\d+)\s*[-~—]\s*(\d+)$/);
+      if (!match) throw new Error('鞋码范围格式不正确，请输入如 35-40');
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      if (end < start) throw new Error('结束鞋码不能小于起始鞋码');
+      const sizes = [];
+      for (let i = start; i <= end; i++) sizes.push(i);
+      return sizes;
+    }
+
+    function getSizesSafe() {
+      try {
+        return parseRange(els.rangeInput.value.trim());
+      } catch {
+        return [];
+      }
+    }
+
+    function renderManualRows() {
+      const sizes = getSizesSafe();
+      const source = manualDraft.length ? manualDraft : [{ size: '', count: '' }];
+      els.manualRows.innerHTML = '';
+
+      source.forEach((item, idx) => {
+        const row = document.createElement('div');
+        row.className = 'manual-row';
+        row.innerHTML = `
+          <select class="manual-size" data-index="${idx}">
+            <option value="">选择鞋码</option>
+            ${sizes.map(size => `<option value="${size}" ${String(item.size) === String(size) ? 'selected' : ''}>${size}</option>`).join('')}
+          </select>
+          <input class="manual-count" data-index="${idx}" type="number" min="0" step="1" placeholder="数量" value="${item.count ?? ''}" />
+          <button class="danger icon-btn manual-remove" data-index="${idx}" ${source.length === 1 ? 'disabled' : ''}>×</button>
+        `;
+        els.manualRows.appendChild(row);
+      });
+    }
+
+    function collectManualRows() {
+      const sizes = [...document.querySelectorAll('.manual-size')].map(el => el.value);
+      const counts = [...document.querySelectorAll('.manual-count')].map(el => el.value);
+      return sizes.map((size, idx) => ({ size, count: counts[idx] }));
+    }
+
+    function mappingFromManualRows() {
+      const rows = collectManualRows();
+      const mapping = {};
+      const valid = rows.filter(item => item.size !== '' && item.count !== '');
+      if (!valid.length) throw new Error('请先选择鞋码并填写数量');
+
+      valid.forEach(item => {
+        const count = Number(item.count);
+        if (Number.isNaN(count) || count < 0) throw new Error('数量必须是 0 或正整数');
+        mapping[item.size] = count;
+      });
+      return mapping;
+    }
+
+    function mappingFromDigitString(rangeText, digitString) {
+      const sizes = parseRange(rangeText);
+      const digits = String(digitString || '').replace(/\D/g, '').split('');
+      if (digits.length !== sizes.length) {
+        throw new Error(`当前鞋码范围共有 ${sizes.length} 个鞋码，识别结果需要 ${sizes.length} 位数字，当前只有 ${digits.length} 位`);
+      }
+      const mapping = {};
+      sizes.forEach((size, idx) => {
+        mapping[size] = Number(digits[idx]);
+      });
+      return mapping;
+    }
+
+    function totalFromMapping(mapping) {
+      return Object.values(mapping).reduce((sum, n) => sum + Number(n || 0), 0);
+    }
+
+    function renderCurrent() {
+      const entries = Object.entries(currentMapping || {});
+      els.sizeGrid.innerHTML = '';
+      if (!entries.length) {
+        els.sizeGrid.innerHTML = '<div class="hint">还没有当前结果，先录入一次或上传图片识别。</div>';
+      } else {
+        entries.forEach(([size, count]) => {
+          const div = document.createElement('div');
+          div.className = 'size-chip';
+          div.innerHTML = `<div class="s">鞋码 ${size}</div><div class="n">${count}</div>`;
+          els.sizeGrid.appendChild(div);
+        });
+      }
+      els.totalPairs.textContent = totalFromMapping(currentMapping);
+      els.sizeCount.textContent = entries.length;
+      els.recordCount.textContent = getRecords().length;
+      saveCurrentState();
+    }
+
+    function renderHistory() {
+      const records = getRecords();
+      els.recordCount.textContent = records.length;
+      if (!records.length) {
+        els.historyTableBody.innerHTML = '<tr><td colspan="5">暂无记录</td></tr>';
+        return;
+      }
+      els.historyTableBody.innerHTML = records.slice().reverse().map(item => {
+        const detail = Object.entries(item.mapping).map(([k, v]) => `${k}:${v}`).join(' / ');
+        return `
+          <tr>
+            <td>${item.time}</td>
+            <td>${escapeHtml(item.batchName || '-')}</td>
+            <td>${escapeHtml(item.range || '-')}</td>
+            <td>${escapeHtml(detail)}</td>
+            <td>${item.total}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function saveCurrentRecord(source = 'manual') {
+      if (!Object.keys(currentMapping).length) throw new Error('当前没有可保存的数据');
+      const records = getRecords();
+      const now = new Date();
+      records.push({
+        id: Date.now(),
+        time: now.toLocaleString('zh-CN', { hour12: false }),
+        batchName: els.batchName.value.trim(),
+        range: els.rangeInput.value.trim(),
+        mapping: currentMapping,
+        total: totalFromMapping(currentMapping),
+        source,
+      });
+      saveRecords(records);
+      renderHistory();
+      saveCurrentState();
+    }
+
+    function showPreview(file) {
+      const reader = new FileReader();
+      reader.onload = e => {
+        els.imagePreview.src = e.target.result;
+        els.previewWrap.classList.remove('hidden');
+      };
+      reader.readAsDataURL(file);
+    }
+
+    async function recognizeImage(file) {
+      if (!file) return;
+      if (!els.rangeInput.value.trim()) {
+        setStatus('请先输入鞋码范围，再上传图片识别。', 'err');
+        return;
+      }
+
+      showPreview(file);
+      isRecognizing = true;
+      setStatus('图片已上传，正在自动识别数字，请稍候…', 'warn');
+
+      try {
+        const result = await Tesseract.recognize(file, 'eng', {
+          logger: m => {
+            if (m.status === 'recognizing text') {
+              const percent = Math.round((m.progress || 0) * 100);
+              setStatus(`正在自动识别数字：${percent}%`, 'warn');
+            }
+          }
+        });
+
+        const raw = (result.data && result.data.text) ? result.data.text : '';
+        const digits = raw.replace(/\D/g, '');
+        if (!digits) throw new Error('没有识别到数字，请换一张更清晰的图片');
+
+        els.ocrInput.value = digits;
+        els.ocrDisplay.textContent = digits;
+
+        currentMapping = mappingFromDigitString(els.rangeInput.value, digits);
+        renderCurrent();
+        setStatus(`识别完成：${digits}，已自动转换到当前结果。请确认后点击“保存识别结果”。`, 'ok');
+      } catch (err) {
+        setStatus(err.message || '识别失败，请重试', 'err');
+      } finally {
+        isRecognizing = false;
+        saveCurrentState();
+      }
+    }
+
+    function addManualRow(defaults = { size: '', count: '' }) {
+      manualDraft = collectManualRows();
+      manualDraft.push(defaults);
+      renderManualRows();
+      saveCurrentState();
+    }
+
+    function clearManualRows() {
+      manualDraft = [{ size: '', count: '' }];
+      renderManualRows();
+      saveCurrentState();
+      setStatus('手动录入已清空。');
+    }
+
+    function bindEvents() {
+      ['input', 'change'].forEach(evt => {
+        [els.rangeInput, els.batchName, els.ocrInput].forEach(el => {
+          el.addEventListener(evt, () => {
+            if (el === els.ocrInput) {
+              els.ocrDisplay.textContent = els.ocrInput.value.trim() || '--';
+              try {
+                if (els.ocrInput.value.trim() && els.rangeInput.value.trim()) {
+                  currentMapping = mappingFromDigitString(els.rangeInput.value, els.ocrInput.value);
+                  renderCurrent();
+                }
+              } catch {}
+            }
+            saveCurrentState();
+          });
+        });
+      });
+
+      els.rangeInput.addEventListener('change', () => {
+        manualDraft = collectManualRows();
+        renderManualRows();
+      });
+
+      els.addManualRowBtn.addEventListener('click', () => addManualRow());
+
+      els.manualRows.addEventListener('input', () => saveCurrentState());
+      els.manualRows.addEventListener('change', () => saveCurrentState());
+      els.manualRows.addEventListener('click', e => {
+        if (e.target.classList.contains('manual-remove')) {
+          const rows = collectManualRows();
+          const idx = Number(e.target.dataset.index);
+          rows.splice(idx, 1);
+          manualDraft = rows.length ? rows : [{ size: '', count: '' }];
+          renderManualRows();
+          saveCurrentState();
+        }
+      });
+
+      els.saveManualBtn.addEventListener('click', () => {
+        try {
+          currentMapping = mappingFromManualRows();
+          renderCurrent();
+          saveCurrentRecord('manual');
+          setStatus('手动录入已保存。', 'ok');
+        } catch (err) {
+          setStatus(err.message, 'err');
+        }
+      });
+
+      els.clearManualBtn.addEventListener('click', clearManualRows);
+
+      els.cameraInput.addEventListener('change', e => {
+        const file = e.target.files && e.target.files[0];
+        recognizeImage(file);
+      });
+
+      els.albumInput.addEventListener('change', e => {
+        const file = e.target.files && e.target.files[0];
+        recognizeImage(file);
+      });
+
+      els.saveOcrBtn.addEventListener('click', () => {
+        try {
+          if (isRecognizing) throw new Error('图片仍在识别中，请稍后再保存');
+          currentMapping = mappingFromDigitString(els.rangeInput.value, els.ocrInput.value);
+          renderCurrent();
+          saveCurrentRecord('ocr');
+          setStatus('识别结果已保存。', 'ok');
+        } catch (err) {
+          setStatus(err.message, 'err');
+        }
+      });
+
+      els.exportBtn.addEventListener('click', () => {
+        const records = getRecords();
+        const blob = new Blob([JSON.stringify(records, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'arrival-records.json';
+        a.click();
+        URL.revokeObjectURL(url);
+        setStatus('历史记录已导出。', 'ok');
+      });
+
+      els.clearHistoryBtn.addEventListener('click', () => {
+        localStorage.removeItem(STORAGE_KEY);
+        renderHistory();
+        renderCurrent();
+        setStatus('全部历史记录已清空。');
+      });
+    }
+
+    function init() {
+      loadCurrentState();
+      renderManualRows();
+      bindEvents();
+      renderCurrent();
+      renderHistory();
+      setStatus('应用已就绪，可以开始录入。', 'ok');
+    }
+
+    init();
+  </script>
+</body>
+</html>
